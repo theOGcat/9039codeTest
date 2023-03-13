@@ -141,7 +141,7 @@ model.add(layers.MaxPooling2D((2, 2)))
 model.add(layers.GlobalAveragePooling2D())
 model.add(layers.Dense(128, activation='relu'))
 model.add(layers.Dropout(0.5))
-model.add(layers.Dense(1, activation='sigmoid'))
+model.add(layers.Dense(2, activation='sigmoid'))
 model.summary()
 # Compile the model
 model.compile(optimizer='adam',
