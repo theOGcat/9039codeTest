@@ -8,7 +8,13 @@ import PIL
 import tensorflow as tf
 from tensorflow import keras
 from keras import layers, models
+from sklearn.utils import resample
+from sklearn.metrics import accuracy_score
+from keras.models import Sequential
+from keras.layers import Conv2D, MaxPooling2D, Flatten, Dense, Dropout
+from keras.callbacks import EarlyStopping
 from keras.optimizers import Adam
+from sklearn.ensemble import AdaBoostClassifier, BaggingClassifier
 from keras.preprocessing.image import ImageDataGenerator
 import matplotlib.pyplot as plt
 from matplotlib.pyplot import imshow
@@ -18,7 +24,6 @@ from sklearn.metrics import confusion_matrix, classification_report
 from sklearn.utils import shuffle
 # Enable GPU
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
-
 
 train_df = pd.read_csv('archive/train.csv', sep=" ", header=None)
 train_df.columns = ['patient id', 'filename', 'label', 'data source']
@@ -78,6 +83,19 @@ axs.set(xlabel='Image number')
 plt.show()
 
 
+# negative values in class column
+negative = train_df[train_df['label'] == 'negative']
+# positive values in class column
+positive = train_df[train_df['label'] == 'positive']
+
+df_majority_downsampled_neg = resample(negative, replace=True, n_samples=5000)
+df_majority_downsampled_pos = resample(positive, replace=True, n_samples=5000)
+
+train_df = pd.concat([df_majority_downsampled_pos,
+                     df_majority_downsampled_neg])
+train_df = shuffle(train_df)  # shuffling so that there is particular sequence
+
+
 train_df, valid_df = train_test_split(train_df, train_size=0.8, random_state=0)
 
 print(
@@ -98,13 +116,13 @@ test_datagen = ImageDataGenerator(rescale=1.0/255.)
 
 
 train_gen = train_datagen.flow_from_dataframe(dataframe=train_df, directory='archive/train', x_col='filename',
-                                              y_col='label', target_size=(200, 200), batch_size=64,
+                                              y_col='label', target_size=(256, 256), batch_size=64,
                                               class_mode='binary')
 val_gen = test_datagen.flow_from_dataframe(dataframe=valid_df, directory='archive/train', x_col='filename',
-                                           y_col='label', target_size=(200, 200), batch_size=64,
+                                           y_col='label', target_size=(256, 256), batch_size=64,
                                            class_mode='binary')
 test_gen = test_datagen.flow_from_dataframe(dataframe=test_df, directory='archive/test', x_col='filename',
-                                            y_col='label', target_size=(200, 200), batch_size=64,
+                                            y_col='label', target_size=(256, 256), batch_size=64,
                                             class_mode='binary')
 labels = {value: key for key, value in train_gen.class_indices.items()}
 # class mode binary because we want the classifier to predict covid or not
@@ -124,47 +142,69 @@ plt.imshow(images[0])
 ##### 此部分开始建模 #####
 # Modeling
 # Define the CNN model
-model = models.Sequential()
-model.add(layers.Conv2D(32, (3, 3), activation='relu', input_shape=(256, 256, 3)))
-model.add(layers.MaxPooling2D((2, 2)))
+CNNmodel = models.Sequential()
+CNNmodel.add(layers.Conv2D(
+    32, (3, 3), activation='relu', input_shape=(256, 256, 3)))
+CNNmodel.add(layers.MaxPooling2D((2, 2)))
 
-model.add(layers.Conv2D(64, (3, 3), activation='relu'))
-model.add(layers.MaxPooling2D((2, 2)))
+# Dropout rate was added to prevent overfitting.
+CNNmodel.add(layers.Conv2D(64, (3, 3), activation='relu'))
+CNNmodel.add(layers.MaxPooling2D((2, 2)))
 
-model.add(layers.Conv2D(128, (3, 3), activation='relu'))
-model.add(layers.MaxPooling2D((2, 2)))
+CNNmodel.add(layers.Conv2D(128, (3, 3), activation='relu'))
+CNNmodel.add(layers.MaxPooling2D((2, 2)))
+CNNmodel.add(layers.Dropout(0.25))
 
-model.add(layers.Conv2D(256, (3, 3), activation='relu'))
-model.add(layers.MaxPooling2D((2, 2)))
+CNNmodel.add(layers.Conv2D(256, (3, 3), activation='relu'))
+CNNmodel.add(layers.MaxPooling2D((2, 2)))
+CNNmodel.add(layers.Dropout(0.25))
 
-
-model.add(layers.GlobalAveragePooling2D())
-model.add(layers.Dense(128, activation='relu'))
-model.add(layers.Dropout(0.5))
-model.add(layers.Dense(1, activation='sigmoid'))
-model.summary()
+CNNmodel.add(Flatten())
+CNNmodel.add(layers.Dense(64, activation='sigmoid'))
+CNNmodel.add(layers.Dropout(0.25))
+CNNmodel.add(layers.Dense(1, activation='sigmoid'))
+CNNmodel.summary()
 # Compile the model
-model.compile(optimizer='adam',
-              loss='binary_crossentropy',
-              metrics=['accuracy'])
+# implement the early stopping technique to prevent overfitting
+early_stop = EarlyStopping(monitor='val_loss', patience=5)
+CNNmodel.compile(optimizer='adam',
+                 loss='binary_crossentropy',
+                 metrics=['accuracy'])
+
 
 # Train the model
-history = model.fit(train_gen,
-                    steps_per_epoch=train_gen.samples // train_gen.batch_size,
-                    epochs=10,
-                    validation_data=val_gen,
-                    validation_steps=val_gen.samples // val_gen.batch_size)
+history = CNNmodel.fit(train_gen,
+                       #steps_per_epoch=train_gen.samples // train_gen.batch_size,
+                       epochs=20,
+                       validation_data=val_gen,
+                       #validation_steps=val_gen.samples // val_gen.batch_size,
+                       callbacks=[early_stop])
 
 # Evaluate the model on the test set
-test_loss, test_acc = model.evaluate(
+test_loss, test_acc = CNNmodel.evaluate(
     test_gen, steps=test_gen.samples // test_gen.batch_size)
 
-plt.plot(history.history['accuracy'], label='accuracy')
-plt.plot(history.history['val_accuracy'], label='val_accuracy')
-plt.xlabel('Epoch')
-plt.ylabel('Accuracy')
-plt.ylim([0.5, 1])
-plt.legend(loc='lower right')
-plt.show()
 
+# Evaluate the model on the test set
+test_loss, test_acc = CNNmodel.evaluate(
+    test_gen, steps=test_gen.samples // test_gen.batch_size)
+
+
+fig, ax = plt.subplots(nrows=2, figsize=(12, 10))
+ax[0].set_title('Loss vs Epoch')
+ax[0].plot(history.history['loss'], label='Training Loss', color='orange')
+ax[0].plot(history.history['val_loss'], label='Validation Loss', color='red')
+ax[0].set_xlabel('Epoch')
+ax[0].set_ylabel('Loss')
+ax[0].legend(loc='best')
+ax[1].set_title('Accuracy vs Epoch')
+ax[1].plot(history.history['accuracy'],
+           label='Training Accuracy', color='orange')
+ax[1].plot(history.history['val_accuracy'],
+           label='Validation Accuracy', color='red')
+ax[1].set_xlabel('Epoch')
+ax[1].set_ylabel('Accuracy')
+ax[1].legend(loc='best')
+plt.tight_layout()
+plt.show()
 print('Test accuracy:', test_acc)
